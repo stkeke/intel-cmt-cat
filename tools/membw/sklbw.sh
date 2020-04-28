@@ -1,8 +1,9 @@
 #!/bin/bash
 
-CMD_HOME=/opt/stack/intel-cmt-cat
-PQOS=$CMD_HOME/pqos/pqos
-MEMBW=$CMD_HOME/tools/membw/membw
+CMD_HOME="/opt/stack/intel-cmt-cat"
+PQOS="$CMD_HOME/pqos/pqos"
+MEMBW="$CMD_HOME/tools/membw/membw"
+RDTSET="$CMD_HOME/rdtset/rdtset"
 
 if [[ ! -x "$PQOS" ]]; then
 	echo "PQOS command ($PQOS) not found"
@@ -11,6 +12,11 @@ fi
 
 if [[ ! -x "$MEMBW" ]]; then
 	echo "MEMBW command ($MEMBW) not found"
+	exit 1
+fi
+
+if [[ ! -x "$RDTSET" ]]; then
+	echo "RDTSET command ($RDTSET) not found"
 	exit 1
 fi
 
@@ -144,18 +150,37 @@ function pqos_get_avg_mbl_for_each_core()
 	done
 }
 
-# $1: core# 
-function membw_run_write_on_core()
+# $1: start core#
+# $2: end core# 
+# $3: mba
+function membw_run_write_on_cores_with_mba()
 {
-	$MEMBW -c $1 -b 100000 --write &
-	# for data warmup 
-	sleep 1
+	# reset all COS
+	sudo $PQOS -R 
+
+	if (( $1 == $2 )); then
+			set -x 
+			sudo $PQOS -e "mba:1=$3"
+			sudo $PQOS -a "llc:1=$1"
+			membw_run_write_on_core $1
+			set +x
+	else
+			set -x 
+			local cpus_list="$1-$(( $2/2 ))" 
+	 		sudo $PQOS -e "mba:1=$3"
+			sudo $PQOS -a "llc:1=$cpus_list"
+			membw_run_write_on_cores $1 $2
+			set +x
+	fi
+	sleep 3
 }
+
 
 function membw_run_read_on_core()
 {
 	$MEMBW -c $1 -b 100000 --read &
 }
+
 # $1: the first core
 # $2: the last core
 function membw_run_write_on_cores()
@@ -165,8 +190,16 @@ function membw_run_write_on_cores()
 	do
 		membw_run_write_on_core $i &
 	done
-	# for data warmup
-	sleep 3
+}
+
+function membw_run_write_on_core()
+{
+	$MEMBW -c $1 -b 100000 --write &
+}
+
+function membw_run_read_on_core()
+{
+	$MEMBW -c $1 -b 100000 --read &
 }
 
 function membw_kill()
@@ -196,30 +229,67 @@ function mba_cos1_bind_cores()
 	sleep 1
 }
 
-function benchmark_mba()
+function benchmark_write_mba()
 {
+	local result_file="/tmp/result.mba.log"
+	rm -rf $result_file && touch $result_file
+
 	membw_kill
 
-	for i in {1..3}
+	for i in {1..17}
 	do
-		echo "Beanchmark $i membw processes"
+		echo "Beanchmark $i membw processes" | tee -a $result_file 
 
-		membw_run_write_on_cores 1 $i
-
-		for j in {10..20..10}
+		for j in {10..100..10}
 		do
 			local data_file="/tmp/cores-$i-$j.log"
-			echo "COS1 MBA=$j"		
-			mba_cos1_set_mb $j
-			# mba_cos1_bind_cores 1			
+			echo "COS1 MBA=$j" | tee -a $result_file
+			membw_run_write_on_cores_with_mba 1 $i $j
 
 			pqos_collect_data_by_cores $data_file $i
-			pqos_get_total_mbl $data_file
-			pqos_get_avg_mbl_for_each_core $data_file
+			pqos_get_total_mbl $data_file | tee -a $result_file
+			pqos_get_avg_mbl_for_each_core $data_file | tee -a $result_file
 		done
 		echo "kill membw processes"
 		membw_kill
 	done
+}
+
+function benchmark_parse_data_file()
+{
+	local data_file="$1"
+
+	# cores is also processes
+	local cores="$2"
+
+	# get total bw for each MBA=10,20,30,40
+	echo "MBA TOTAL Processes=1..17"
+	for m in {10..100..10}
+	do
+		local filter="MBA=$m"
+		echo "$m $(grep -w "$filter" -A 1 $data_file | grep TOTAL | sed -e 's/TOTAL: //' | paste -sd' ')"
+	done
+
+	echo "MBA Avg Core1  Mem BW (MB/s)"
+	for m in {10..100..10}
+	do
+		local filter="MBA=$m"
+		echo "$m $(grep -w "$filter" -A 2 $data_file | grep "AVG: 1:" | sed -e "s/AVG: 1: //" | paste -sd' ')"
+	done
+
+	echo "MBA Per Core Mem BW (MB/s)"
+
+	for p in {1..17}
+	do
+		echo "Process=$p"
+		for m in {10..100..10}
+		do
+			local filter="MBA=$m"
+			echo "$m $(sed -n -e "/Beanchmark $p membw processes/,/Beanchmark $((p+1)) membw processes/p" $data_file | 
+				grep -w "$filter" -A $((p + 2)) | grep "AVG: " | sed -e "s/AVG:.*: //" | paste -sd' ')"
+		done 
+	done
+
 }
 
 function benchmark_membw()
@@ -238,7 +308,10 @@ function benchmark_membw()
 		pqos_get_total_mbl $data_file
 		pqos_get_avg_mbl_for_each_core $data_file
 	done
+
+	membw_kill
 }
+
 
 function run_membw_test()
 {
