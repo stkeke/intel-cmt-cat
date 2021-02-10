@@ -295,8 +295,12 @@ function mba_cos1_bind_cores()
 # ========== Usage for end user ============
 # first run benchmark_write_mba()
 # then run benchmark_parse_data_file /tmp/result.mba.log to generate report
+# $1: CORES (to replace global variable CORES)
 function rdt_mba_benchmark()
 {
+	if [[ -n "$1" ]]; then
+		CORES=$1
+	fi
 	benchmark_write_mba
 	benchmark_parse_data_file /tmp/result.mba.log
 }
@@ -352,7 +356,7 @@ function benchmark_parse_data_file()
 	done
 
 	echo "MBA Per Core Mem BW (MB/s)"
-	for ((i=1; i<=$CORES; i++))
+	for ((p=1; p<=$CORES; p++))
 	do
 		echo "Process=$p"
 		for m in {10..100..10}
