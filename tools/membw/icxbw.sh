@@ -28,10 +28,14 @@ if [[ ! -x "$RDTSET" ]]; then
 fi
 
 # collect system information
-function get_rdt_information()
+function rdt_get_information()
 {
 	sudo $PQOS -I -D
 }
+
+echo "Usage: "
+echo "rdt_get_information: print out RDT information"
+echo "rdt_mba_benchmark: run MBA benchmark"
 
 # ======== PRIVATE FUNCTION ========
 # Function: run qpos command to collect monitor data and sort by core#
